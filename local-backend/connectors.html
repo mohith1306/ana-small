@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Connectors — multi-engine SQL workbench</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; color: #111; background: #f5f5f5; }
+  header { background: #111; color: #fff; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .be { font-size: 12px; opacity: .7; }
+  .layout { display: flex; height: calc(100vh - 49px); }
+  .sidebar { width: 280px; background: #fff; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+  .sidebar h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #666; margin: 0; padding: 14px 16px 8px; }
+  .conn-list { flex: 1; overflow-y: auto; }
+  .conn-item { padding: 10px 16px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+  .conn-item:hover { background: #f7f7f7; }
+  .conn-item.active { background: #eef2ff; border-left: 3px solid #4f46e5; }
+  .conn-item .name { font-weight: 600; font-size: 14px; }
+  .conn-item .meta { font-size: 12px; color: #888; margin-top: 2px; }
+  .badge { display: inline-block; font-size: 10px; background: #e5e7eb; color: #374151; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: .03em; }
+  .sidebar .add-btn { margin: 10px 16px; }
+  .main { flex: 1; overflow-y: auto; padding: 20px; }
+  button { font: inherit; padding: 8px 14px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; border-radius: 4px; }
+  button.secondary { background: #fff; color: #111; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.danger { background: #fff; color: #b91c1c; border-color: #b91c1c; }
+  input, select, textarea { font: inherit; width: 100%; padding: 8px; border: 1px solid #bbb; border-radius: 4px; }
+  label { display: block; font-size: 13px; color: #444; margin: 10px 0 4px; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 18px; margin-bottom: 18px; }
+  .card h3 { margin: 0 0 12px; font-size: 15px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .actions { margin-top: 16px; display: flex; gap: 8px; }
+  .status { margin-top: 12px; padding: 10px; border-radius: 4px; font-size: 13px; white-space: pre-wrap; }
+  .status.ok { background: #ecfdf5; border: 1px solid #10b981; color: #065f46; }
+  .status.err { background: #fef2f2; border: 1px solid #ef4444; color: #991b1b; }
+  .status.info { background: #eff6ff; border: 1px solid #3b82f6; color: #1e40af; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tabs button { background: #fff; color: #111; border: 1px solid #ccc; }
+  .tabs button.active { background: #111; color: #fff; border-color: #111; }
+  .split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
+  .table-list { border: 1px solid #ddd; border-radius: 6px; background: #fff; max-height: 60vh; overflow-y: auto; }
+  .table-list .t { padding: 7px 12px; font-size: 13px; cursor: pointer; border-bottom: 1px solid #f3f3f3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .table-list .t:hover { background: #f5f5f5; }
+  .table-list .t.active { background: #eef2ff; }
+  textarea.sql { min-height: 120px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .results { overflow: auto; max-height: 55vh; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
+  table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.grid th, table.grid td { border: 1px solid #eee; padding: 5px 8px; text-align: left; white-space: nowrap; }
+  table.grid th { background: #fafafa; position: sticky; top: 0; }
+  .muted { color: #888; font-size: 13px; }
+  .hidden { display: none !important; }
+  .hint { font-size: 12px; color: #888; margin-top: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔌 Connectors</h1>
+  <div style="display:flex;align-items:center;gap:8px">
+    <input id="oaKey" type="password" placeholder="OpenAI API key (sk-...)" style="width:230px;padding:5px;border-radius:4px;border:1px solid #555;background:#222;color:#fff" />
+    <input id="oaModel" type="text" placeholder="model" style="width:110px;padding:5px;border-radius:4px;border:1px solid #555;background:#222;color:#fff" />
+    <span class="be">be: <code id="beUrl"></code></span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <h2>Connections</h2>
+    <div class="conn-list" id="connList"></div>
+    <button class="add-btn" id="newBtn">+ New connection</button>
+    <button class="add-btn secondary" id="uploadBtn" style="margin-top:0">⬆ Upload CSV → MySQL</button>
+  </aside>
+
+  <main class="main" id="main"></main>
+</div>
+
+<script>
+// ---------- storage ----------
+const LS_KEY = 'connectorConnections';
+const API = '/api/query'; // served same-origin by the Flask backend
+
+const DEFAULT_PORTS = { mysql: 3306, postgres: 5432, clickhouse: 8443 };
+
+const ENGINES = [
+  ['mysql', 'MySQL'],
+  ['postgres', 'PostgreSQL / Redshift'],
+  ['databricks', 'Databricks'],
+  ['snowflake', 'Snowflake'],
+  ['clickhouse', 'ClickHouse'],
+  ['bigquery', 'BigQuery'],
+];
+
+let conns = [];
+let selectedId = null;       // currently selected connection
+let editing = null;          // connection object being edited (or null)
+let uploading = false;       // true while the "Upload CSV → MySQL" form is shown
+let activeTab = 'query';     // 'query' | 'tables'
+let currentTable = null;
+
+// Per-connection metadata cache: { [connId]: { tables: string[]|null, cols: { [table]: schemaBlock } } }
+// Fetched once on the first question, reused for later questions (no repeated DB metadata reads).
+// Persisted to localStorage so it survives page reloads.
+const SCHEMA_LS_KEY = 'connectorSchemaCache';
+const schemaCache = (() => { try { return JSON.parse(localStorage.getItem(SCHEMA_LS_KEY)) || {}; } catch { return {}; } })();
+function saveSchemaCache() {
+  try { localStorage.setItem(SCHEMA_LS_KEY, JSON.stringify(schemaCache)); }
+  catch (e) { clog('⚠️ could not persist schema cache: ' + e.message); }
+}
+function cacheFor(c) { return (schemaCache[c.id] = schemaCache[c.id] || { tables: null, cols: {} }); }
+function clearSchemaCache(id) { delete schemaCache[id]; saveSchemaCache(); }
+
+// Render whatever schema is currently held in the cache, so you can verify it persists.
+function viewCachedSchema(c) {
+  const cache = schemaCache[c.id];
+  const trace = document.getElementById('trace');
+  if (trace) trace.innerHTML = '';
+  setStatus('qStatus', 'info', 'Showing cached schema (see console for cache details).');
+
+  const hasTables = cache && cache.tables;
+  const cachedCols = cache ? Object.keys(cache.cols) : [];
+  if (!hasTables && cachedCols.length === 0) {
+    clog(`👁 View schema: NOTHING CACHED yet for "${c.name}". Ask a question first — it gets fetched from the DATABASE and cached.`);
+    if (trace) trace.innerHTML = `<div class="card"><p class="muted">No schema cached yet for <b>${esc(c.name)}</b>. Ask a question first — the schema is read from the database once and cached.</p></div>`;
+    return;
+  }
+
+  const tableCount = hasTables ? cache.tables.length : 0;
+  clog(`👁 View schema FROM CACHE for "${c.name}": ${tableCount} table name(s) cached, columns cached for ${cachedCols.length} table(s).`);
+  console.log('[Ana Small] cached schema object:', JSON.parse(JSON.stringify(cache)));
+
+  let html = `<div class="card" style="border-color:#6366f1">
+    <h4 style="margin:0 0 6px">🗄️ Cached schema for "${esc(c.name)}" <span class="muted">(in-memory cache)</span></h4>
+    <div class="muted">Table list cached: <b>${tableCount}</b> · Columns cached for: <b>${cachedCols.length}</b> table(s)</div>`;
+  if (hasTables) {
+    html += `<details style="margin-top:8px"><summary style="cursor:pointer">All ${tableCount} cached table names</summary>
+      <pre style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;background:#f6f8fa;padding:8px;border-radius:4px;max-height:200px;overflow:auto">${esc(cache.tables.join(', '))}</pre></details>`;
+  }
+  if (cachedCols.length) {
+    const schemaText = cachedCols.map(t => cache.cols[t]).join('\n\n');
+    html += `<h4 style="margin:12px 0 6px">Cached columns</h4>
+      <pre style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;background:#f6f8fa;padding:8px;border-radius:4px;max-height:300px;overflow:auto">${esc(schemaText)}</pre>`;
+  } else {
+    html += `<p class="muted" style="margin-top:8px">Table list is cached, but no column metadata yet (columns are cached the first time a table is used in a question).</p>`;
+  }
+  html += `</div>`;
+  if (trace) trace.innerHTML = html;
+}
+
+function load() { try { conns = JSON.parse(localStorage.getItem(LS_KEY)) || []; } catch { conns = []; } }
+function save() { localStorage.setItem(LS_KEY, JSON.stringify(conns)); }
+function uid() { return 'c-' + Math.random().toString(36).slice(2, 10); }
+function getConn(id) { return conns.find(c => c.id === id); }
+
+// console logger so you can watch the flow in DevTools (F12 -> Console)
+function clog(msg, ...rest) {
+  const ts = new Date().toLocaleTimeString();
+  console.log(`%c[Ana Small ${ts}]%c ${msg}`, 'color:#4f46e5;font-weight:bold', 'color:inherit', ...rest);
+}
+
+// ---------- engine-aware SQL ----------
+function nsOf(c) { return c.schema || c.database || ''; }
+
+function tablesQuery(c) {
+  const s = nsOf(c);
+  if (c.engine === 'clickhouse') return `SELECT name AS table_name FROM system.tables WHERE database = '${s}' ORDER BY name`;
+  if (c.engine === 'bigquery')   return `SELECT table_name FROM \`${s}\`.INFORMATION_SCHEMA.TABLES ORDER BY table_name`;
+  return `SELECT table_name FROM information_schema.tables WHERE table_schema = '${s}' ORDER BY table_name`;
+}
+
+function columnsQuery(c, table) {
+  const s = nsOf(c);
+  if (c.engine === 'clickhouse') return `SELECT name AS column_name, type AS data_type FROM system.columns WHERE database = '${s}' AND table = '${table}' ORDER BY position`;
+  if (c.engine === 'bigquery')   return `SELECT column_name, data_type FROM \`${s}\`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${table}' ORDER BY ordinal_position`;
+  return `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = '${s}' AND table_name = '${table}' ORDER BY ordinal_position`;
+}
+
+function previewQuery(c, table) {
+  if (c.engine === 'mysql')     return `SELECT * FROM \`${table}\` LIMIT 50`;
+  if (c.engine === 'bigquery')  return `SELECT * FROM \`${nsOf(c)}.${table}\` LIMIT 50`;
+  if (c.engine === 'clickhouse')return `SELECT * FROM "${table}" LIMIT 50`;
+  return `SELECT * FROM "${table}" LIMIT 50`;
+}
+
+// ---------- backend call ----------
+async function runSql(creds, code) {
+  clog(`🗄️ Executing query on database (${creds.engine}) ▶ ${code.replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+  try {
+    const r = await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, redshiftCredentials: creds }),
+    });
+    const out = await r.json();
+    if (out.error) clog(`   ❌ database returned error: ${out.error}`);
+    else clog(`   ✅ database returned ${(out.rows || []).length} row(s)`);
+    return out;
+  } catch (e) {
+    clog(`   ❌ could not reach backend: ${e.message}`);
+    return { columns: [], rows: [], error: 'Could not reach backend: ' + e.message };
+  }
+}
+
+// ---------- natural language -> SQL (schema-only: Ana Small sees metadata, NEVER data) ----------
+function dialectNotes(engine) {
+  return {
+    mysql: 'MySQL dialect. Quote identifiers with backticks. Use LIMIT. Tables are in information_schema.',
+    postgres: 'PostgreSQL/Redshift dialect. Quote identifiers with double quotes. Use LIMIT.',
+    clickhouse: 'ClickHouse dialect. information_schema may be blocked — use system.tables / system.columns to inspect. Quote identifiers with double quotes. Use LIMIT. Do NOT end queries with a semicolon.',
+    snowflake: 'Snowflake dialect. Identifiers are case-insensitive (stored uppercase). Use LIMIT.',
+    databricks: 'Databricks Spark SQL. Quote identifiers with backticks. Use LIMIT.',
+    bigquery: 'BigQuery Standard SQL. Reference tables as `dataset.table`. INFORMATION_SCHEMA is dataset-qualified: `dataset`.INFORMATION_SCHEMA.TABLES. Use LIMIT.',
+  }[engine] || 'Standard SQL.';
+}
+
+// One LLM completion. NO tools — schema in, text out. The model never receives row data.
+async function llm(messages) {
+  const key = document.getElementById('oaKey').value.trim();
+  const model = document.getElementById('oaModel').value.trim() || 'o3-mini';
+  if (!key) throw new Error('Enter your OpenAI API key in the header first.');
+  clog(`📤 Sending request to Ana Small from frontend (model=${model}, ${messages.length} message(s))`);
+  const r = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ openaiApiKey: key, model, messages }),
+  });
+  if (!r.ok) { const t = await r.text(); clog(`   ❌ Ana Small request failed: ${t}`); throw new Error(t); }
+  const data = await r.json();
+  const content = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  clog(`📥 Receiving response from Ana Small (${content.length} chars)`);
+  return content;
+}
+
+function extractSql(text) {
+  const m = text.match(/```(?:sql)?\s*([\s\S]*?)```/i);
+  return (m ? m[1] : text).trim();
+}
+
+// Step 1 (large schemas only): pick relevant tables from the NAME list. Metadata only.
+async function selectRelevantTables(c, question, names) {
+  const sys = 'You select which database tables are needed to answer a question. Reply with ONLY a JSON array of table names chosen from the provided list (max 8). No prose.';
+  const user = `Tables:\n${names.join('\n')}\n\nQuestion: ${question}`;
+  const out = await llm([{ role: 'system', content: sys }, { role: 'user', content: user }]);
+  try {
+    const arr = JSON.parse((out.match(/\[[\s\S]*\]/) || ['[]'])[0]);
+    const set = new Set(names);
+    const picked = arr.filter(n => set.has(n));
+    if (picked.length) return picked.slice(0, 12);
+  } catch {}
+  const picked = names.filter(n => out.includes(n));
+  return (picked.length ? picked : names).slice(0, 12);
+}
+
+// Read the table list once per connection, then reuse from cache.
+async function getTables(c) {
+  const cache = cacheFor(c);
+  if (cache.tables) {
+    clog(`♻️ TABLE LIST: served FROM CACHE (${cache.tables.length} tables) — NO database call`);
+    return cache.tables;
+  }
+  clog(`🛢️ TABLE LIST: cache miss → retrieving FROM DATABASE…`);
+  const tRes = await runSql(c, tablesQuery(c));
+  if (tRes.error) throw new Error('Could not list tables: ' + tRes.error);
+  cache.tables = (tRes.rows || []).map(r => r.table_name ?? Object.values(r)[0]);
+  saveSchemaCache();
+  clog(`   → cached ${cache.tables.length} table name(s) for reuse (persisted)`);
+  return cache.tables;
+}
+
+// Step 2: read COLUMNS for the chosen tables (metadata only), caching each table's columns.
+async function fetchSchema(c, tables) {
+  const cache = cacheFor(c);
+  const parts = [];
+  let reused = 0, fetched = 0;
+  for (const t of tables) {
+    if (!cache.cols[t]) {
+      const res = await runSql(c, columnsQuery(c, t));
+      if (res.error) {
+        cache.cols[t] = `${t} ( -- could not read columns: ${res.error} )`;
+      } else {
+        const cols = (res.rows || []).map(r => {
+          const name = r.column_name ?? Object.values(r)[0];
+          const type = r.data_type ?? Object.values(r)[1] ?? '';
+          return `${name} ${type}`.trim();
+        });
+        cache.cols[t] = `${t} (\n  ${cols.join(',\n  ')}\n)`;
+      }
+      fetched++;
+    } else {
+      reused++;
+    }
+    parts.push(cache.cols[t]);
+  }
+  if (fetched > 0) saveSchemaCache();
+  if (fetched === 0) clog(`♻️ COLUMNS: all ${reused} table(s) served FROM CACHE — NO database call`);
+  else clog(`🛢️ COLUMNS: ${fetched} table(s) retrieved FROM DATABASE, ${reused} from CACHE (persisted)`);
+  return parts.join('\n\n');
+}
+
+// Step 3: schema + question -> ONE executable SQL query. No data is involved.
+async function generateSql(c, question, schemaText) {
+  const sys = `You are a ${c.engine} SQL generator. ${dialectNotes(c.engine)}
+Use the ${c.engine === 'bigquery' ? 'dataset' : 'schema/database'} "${nsOf(c)}".
+Given ONLY the schema below, write ONE executable SQL query that answers the user's question.
+Return ONLY the SQL — no explanation, no markdown fences.
+
+Schema:
+${schemaText}`;
+  const out = await llm([{ role: 'system', content: sys }, { role: 'user', content: question }]);
+  return extractSql(out);
+}
+
+async function askNaturalLanguage(c, question) {
+  document.getElementById('trace').innerHTML = '';
+  clog(`❓ New question on "${c.name}" (${c.engine}): ${question}`);
+  try {
+    // 1. table list (metadata) — cached per connection after the first question
+    setStatus('qStatus', 'info', 'Loading table list (metadata)…');
+    let names;
+    try { names = await getTables(c); } catch (e) { return setStatus('qStatus', 'err', e.message); }
+    if (!names.length) return setStatus('qStatus', 'err', 'No tables found in this schema.');
+
+    // 2. narrow to relevant tables for big schemas (still metadata only)
+    let chosen;
+    if (names.length > 30) {
+      setStatus('qStatus', 'info', `Selecting relevant tables from ${names.length}…`);
+      clog(`📤 Asking Ana Small to pick relevant tables from ${names.length} names…`);
+      chosen = await selectRelevantTables(c, question, names);
+      clog(`📥 Ana Small selected tables:`, chosen);
+    } else {
+      chosen = names;
+    }
+
+    // 3. read columns (metadata) and send schema -> SQL
+    setStatus('qStatus', 'info', 'Reading columns (metadata)…');
+    const schemaText = await fetchSchema(c, chosen);
+    clog(`📐 Built schema for ${chosen.length} table(s) — ${schemaText.length} chars (metadata only, NO data)`);
+    addStep('schema', schemaText);
+
+    setStatus('qStatus', 'info', 'Asking Ana Small to write SQL from the schema…');
+    clog(`📤 Sending schema + question to Ana Small to generate SQL…`);
+    const sql = await generateSql(c, question, schemaText);
+    if (!sql) return setStatus('qStatus', 'err', 'The model did not return any SQL.');
+    clog(`📥 Receiving query from Ana Small:\n${sql}`);
+    addStep('sql', sql);
+
+    // 4. execute LOCALLY — results are shown to the user, never sent back to the LLM
+    setStatus('qStatus', 'info', 'Executing locally (results stay local)…');
+    const res = await runSql(c, sql);
+    addStep('result', res);
+    clog(`🔒 Done. Results stayed local — data was NOT sent to Ana Small.`);
+    setStatus('qStatus', res.error ? 'err' : 'ok',
+      res.error ? 'SQL failed — see error below. You can rephrase and ask again.'
+                : `${(res.rows || []).length} row(s). ✅ Only the schema was sent to the AI — your data was not.`);
+  } catch (e) {
+    clog(`❌ Error: ${e.message}`);
+    setStatus('qStatus', 'err', e.message);
+  }
+}
+
+function addStep(kind, payload) {
+  const t = document.getElementById('trace');
+  if (!t) return;
+  const card = document.createElement('div');
+  card.className = 'card';
+  if (kind === 'schema') {
+    card.innerHTML = `<h4 style="margin:0 0 6px">📋 Schema sent to Ana Small <span class="muted">(metadata only — no rows)</span></h4><pre style="margin:0;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;background:#f6f8fa;padding:8px;border-radius:4px;max-height:240px;overflow:auto">${esc(payload || '(none)')}</pre>`;
+    card.style.borderColor = '#6366f1';
+  } else if (kind === 'sql') {
+    card.innerHTML = `<h4 style="margin:0 0 6px">🤖 SQL returned by Ana Small</h4><pre style="margin:0;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:12px;background:#f6f8fa;padding:8px;border-radius:4px">${esc(payload || '(none)')}</pre>`;
+  } else if (kind === 'result') {
+    card.innerHTML = `<h4 style="margin:0 0 6px">📊 Result <span class="muted">(executed locally — not sent to AI)</span></h4>` + (payload.error ? `<div class="status err">${esc(payload.error)}</div>` : `<div class="muted" style="margin-bottom:6px">${(payload.rows||[]).length} row(s)</div>` + gridHtml(payload));
+    card.style.borderColor = '#10b981';
+  }
+  t.appendChild(card);
+}
+
+// ---------- rendering: sidebar ----------
+function renderList() {
+  const el = document.getElementById('connList');
+  if (!conns.length) { el.innerHTML = '<div class="muted" style="padding:16px">No connections yet.</div>'; return; }
+  el.innerHTML = conns.map(c => `
+    <div class="conn-item ${c.id === selectedId ? 'active' : ''}" data-id="${c.id}">
+      <div class="name">${esc(c.name || '(unnamed)')}</div>
+      <div class="meta"><span class="badge">${c.engine}</span> ${esc(c.host || '')}</div>
+    </div>`).join('');
+  el.querySelectorAll('.conn-item').forEach(n =>
+    n.onclick = () => { selectedId = n.dataset.id; editing = null; uploading = false; currentTable = null; render(); });
+}
+
+// ---------- rendering: main ----------
+function render() {
+  renderList();
+  const main = document.getElementById('main');
+  if (uploading) { main.innerHTML = uploadHtml(); wireUpload(); return; }
+  if (editing) { main.innerHTML = formHtml(editing); wireForm(); return; }
+  const c = getConn(selectedId);
+  if (!c) { main.innerHTML = `<div class="card"><p class="muted">Select a connection on the left, or create a new one.</p></div>`; return; }
+  main.innerHTML = workbenchHtml(c);
+  wireWorkbench(c);
+}
+
+// ---------- connection form ----------
+function field(engine, key) {
+  // which fields show for which engine
+  const map = {
+    port:      ['mysql','postgres','clickhouse'],
+    httpPath:  ['databricks'],
+    warehouse: ['snowflake'],
+    database:  ['mysql','postgres','databricks','snowflake','clickhouse'],
+    role:      ['snowflake'],
+    user:      ['mysql','postgres','snowflake','clickhouse'],
+  };
+  if (!map[key]) return true;          // always-on fields
+  return map[key].includes(engine);
+}
+
+function labels(engine) {
+  return {
+    host: engine === 'databricks' ? 'Server Hostname' : engine === 'snowflake' ? 'Account Identifier' : engine === 'bigquery' ? 'Project ID' : 'Host',
+    database: engine === 'databricks' ? 'Catalog' : 'Database',
+    schema: engine === 'bigquery' ? 'Dataset' : 'Schema',
+    password: engine === 'databricks' ? 'Access Token' : engine === 'bigquery' ? 'Service Account JSON (blank = local gcloud ADC)' : 'Password',
+  };
+}
+
+function formHtml(c) {
+  const e = c.engine || 'mysql';
+  const L = labels(e);
+  const opt = (v, t) => `<option value="${v}" ${v === e ? 'selected' : ''}>${t}</option>`;
+  return `
+  <div class="card">
+    <h3>${c.id && getConn(c.id) ? 'Edit' : 'New'} connection</h3>
+    <label>Database Engine</label>
+    <select id="f_engine">${ENGINES.map(([v, t]) => opt(v, t)).join('')}</select>
+
+    <div class="row2">
+      <div><label>Name</label><input id="f_name" value="${esc(c.name || '')}" placeholder="My warehouse" /></div>
+      <div><label>Description</label><input id="f_description" value="${esc(c.description || '')}" placeholder="optional" /></div>
+    </div>
+
+    <div id="fr_host"><label>${L.host}</label><input id="f_host" value="${esc(c.host || '')}" /></div>
+    <div id="fr_port" class="${field(e,'port')?'':'hidden'}"><label>Port</label><input id="f_port" type="number" value="${c.port ?? ''}" /></div>
+    <div id="fr_httpPath" class="${field(e,'httpPath')?'':'hidden'}"><label>HTTP Path</label><input id="f_httpPath" value="${esc(c.httpPath || '')}" placeholder="/sql/1.0/warehouses/abc123" /></div>
+    <div id="fr_warehouse" class="${field(e,'warehouse')?'':'hidden'}"><label>Warehouse</label><input id="f_warehouse" value="${esc(c.warehouse || '')}" placeholder="COMPUTE_WH" /></div>
+    <div id="fr_database" class="${field(e,'database')?'':'hidden'}"><label id="lb_database">${L.database}</label><input id="f_database" value="${esc(c.database || '')}" /></div>
+    <div id="fr_schema"><label id="lb_schema">${L.schema}</label><input id="f_schema" value="${esc(c.schema || '')}" /></div>
+    <div id="fr_role" class="${field(e,'role')?'':'hidden'}"><label>Role (optional)</label><input id="f_role" value="${esc(c.role || '')}" /></div>
+    <div id="fr_user" class="${field(e,'user')?'':'hidden'}"><label>Username</label><input id="f_user" value="${esc(c.user || '')}" /></div>
+    <div id="fr_password">
+      <label id="lb_password">${L.password}</label>
+      <span id="pw_text" class="${e==='bigquery'?'':'hidden'}"><textarea id="f_password_t" rows="4" style="font-family:ui-monospace,monospace;font-size:12px">${esc(c.password || '')}</textarea></span>
+      <span id="pw_pass" class="${e==='bigquery'?'hidden':''}"><input id="f_password_p" type="password" value="${esc(c.password || '')}" /></span>
+    </div>
+
+    <div class="actions">
+      <button id="saveBtn">Save</button>
+      <button class="secondary" id="testFormBtn">Test connection</button>
+      <button class="secondary" id="cancelBtn">Cancel</button>
+      ${getConn(c.id) ? '<button class="danger" id="deleteBtn">Delete</button>' : ''}
+    </div>
+    <div id="formStatus"></div>
+  </div>`;
+}
+
+function readForm() {
+  const e = document.getElementById('f_engine').value;
+  const pw = e === 'bigquery' ? document.getElementById('f_password_t').value : document.getElementById('f_password_p').value;
+  return {
+    id: editing.id || uid(),
+    engine: e,
+    name: val('f_name'), description: val('f_description'),
+    host: val('f_host'),
+    port: document.getElementById('f_port') ? Number(document.getElementById('f_port').value) || DEFAULT_PORTS[e] : undefined,
+    httpPath: val('f_httpPath'), warehouse: val('f_warehouse'),
+    database: val('f_database'), schema: val('f_schema'), role: val('f_role'),
+    user: val('f_user'), password: pw,
+  };
+}
+function val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+
+function wireForm() {
+  const eng = document.getElementById('f_engine');
+  eng.onchange = () => {
+    // preserve typed values, just switch engine + default port + visibility
+    editing = readFormLoose();
+    editing.engine = eng.value;
+    if (DEFAULT_PORTS[eng.value]) editing.port = DEFAULT_PORTS[eng.value];
+    render();
+  };
+  document.getElementById('cancelBtn').onclick = () => { editing = null; render(); };
+  document.getElementById('saveBtn').onclick = () => {
+    const c = readForm();
+    if (!c.name) return setStatus('formStatus', 'err', 'Please give the connection a name.');
+    if (!c.host) return setStatus('formStatus', 'err', 'Please provide a host / account / project.');
+    const i = conns.findIndex(x => x.id === c.id);
+    if (i >= 0) conns[i] = c; else conns.push(c);
+    save(); selectedId = c.id; editing = null; render();
+  };
+  document.getElementById('testFormBtn').onclick = async () => {
+    const c = readForm();
+    setStatus('formStatus', 'info', 'Testing…');
+    await testConnection(c, 'formStatus');
+  };
+  const del = document.getElementById('deleteBtn');
+  if (del) del.onclick = () => {
+    conns = conns.filter(x => x.id !== editing.id);
+    save(); if (selectedId === editing.id) selectedId = null; editing = null; render();
+  };
+}
+// read form without requiring all fields (used on engine switch)
+function readFormLoose() {
+  try { return readForm(); } catch { return editing; }
+}
+
+async function testConnection(c, statusId) {
+  const res = await runSql(c, tablesQuery(c));
+  if (res.error) return setStatus(statusId, 'err', 'Connection failed:\n' + res.error);
+  const n = (res.rows || []).length;
+  setStatus(statusId, 'ok', `Connection successful — found ${n} table(s) in "${nsOf(c)}".`);
+}
+
+// ---------- upload CSV -> MySQL (becomes a connection) ----------
+function uploadHtml() {
+  // Prefill from the selected MySQL connection if there is one, else local defaults.
+  const sel = getConn(selectedId);
+  const base = (sel && sel.engine === 'mysql')
+    ? sel
+    : { name: 'Local MySQL (CSV)', host: 'localhost', port: 3306, user: 'root', database: 'anasmall', password: 'Mohi@2005' };
+  return `
+  <div class="card">
+    <h3>⬆ Upload CSV → MySQL</h3>
+    <p class="muted">Pick a CSV file. The backend loads it into a MySQL table (the same way the Excel importer does) and it's added here as a connection you can query in plain English.</p>
+
+    <label>CSV file</label>
+    <input id="u_file" type="file" accept=".csv,text/csv" />
+
+    <label>Table name</label>
+    <input id="u_table" placeholder="(defaults to the file name)" />
+    <div class="hint">Created or replaced in the database below. Non-alphanumeric characters become "_".</div>
+
+    <label>Connection name (shown in the sidebar)</label>
+    <input id="u_name" value="${esc(base.name || 'Local MySQL (CSV)')}" />
+
+    <div class="row2">
+      <div><label>Host</label><input id="u_host" value="${esc(base.host || 'localhost')}" /></div>
+      <div><label>Port</label><input id="u_port" type="number" value="${base.port || 3306}" /></div>
+    </div>
+    <div class="row2">
+      <div><label>User</label><input id="u_user" value="${esc(base.user || 'root')}" /></div>
+      <div><label>Password</label><input id="u_password" type="password" value="${esc(base.password || '')}" /></div>
+    </div>
+    <label>Database</label>
+    <input id="u_database" value="${esc(base.database || 'anasmall')}" />
+
+    <div class="actions">
+      <button id="u_uploadBtn">Upload &amp; import</button>
+      <button class="secondary" id="u_cancelBtn">Cancel</button>
+    </div>
+    <div id="uStatus"></div>
+  </div>`;
+}
+
+function wireUpload() {
+  document.getElementById('u_cancelBtn').onclick = () => { uploading = false; render(); };
+  document.getElementById('u_uploadBtn').onclick = async () => {
+    const fileEl = document.getElementById('u_file');
+    const file = fileEl.files && fileEl.files[0];
+    if (!file) return setStatus('uStatus', 'err', 'Choose a CSV file first.');
+
+    const host = val('u_host'), port = val('u_port'), user = val('u_user'),
+          database = val('u_database'), name = val('u_name'), table = val('u_table');
+    const password = document.getElementById('u_password').value;
+    if (!host || !user || !database) return setStatus('uStatus', 'err', 'Host, user and database are required.');
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('table', table || file.name.replace(/\.csv$/i, ''));
+    fd.append('host', host);
+    fd.append('port', port || '3306');
+    fd.append('user', user);
+    fd.append('password', password);
+    fd.append('database', database);
+
+    setStatus('uStatus', 'info', 'Uploading and importing into MySQL… (large files can take a while)');
+    clog(`📤 Uploading CSV "${file.name}" → mysql ${user}@${host}:${port}/${database}`);
+    let out;
+    try {
+      const r = await fetch('/api/upload-csv', { method: 'POST', body: fd });
+      out = await r.json();
+    } catch (e) {
+      return setStatus('uStatus', 'err', 'Could not reach backend: ' + e.message);
+    }
+    if (!out.ok) { clog(`   ❌ import failed: ${out.error}`); return setStatus('uStatus', 'err', out.error || 'Upload failed.'); }
+    clog(`   ✅ table "${out.table}" created with ${out.rows} row(s), ${out.columns.length} column(s)`);
+
+    // Create (or reuse) a MySQL connection pointing at this database, then select it.
+    const creds = {
+      engine: 'mysql',
+      name: name || `MySQL (${database})`,
+      host, port: Number(port) || 3306, user, password,
+      database, schema: database,   // for MySQL the schema IS the database
+    };
+    const existing = conns.find(c =>
+      c.engine === 'mysql' && c.host === host && String(c.port) === String(creds.port) &&
+      c.database === database && c.user === user);
+    if (existing) { Object.assign(existing, { name: creds.name, password }); selectedId = existing.id; }
+    else { creds.id = uid(); conns.push(creds); selectedId = creds.id; }
+    save();
+    clearSchemaCache(selectedId); // brand-new table — force a fresh schema read on the next question
+    uploading = false; activeTab = 'query'; currentTable = null;
+    render();
+    setStatus('qStatus', 'ok', `Imported "${out.table}" (${out.rows} rows, ${out.columns.length} columns) into "${database}". Ask a question about it below.`);
+  };
+}
+
+// ---------- workbench (selected connection) ----------
+function workbenchHtml(c) {
+  return `
+  <div class="card">
+    <h3>${esc(c.name)} <span class="badge">${c.engine}</span></h3>
+    <div class="muted">${esc(c.host || '')}${c.port ? ':' + c.port : ''} · ${esc(L_target(c))}</div>
+    <div class="actions">
+      <button class="secondary" id="editBtn">Edit</button>
+      <button class="secondary" id="testBtn">Test connection</button>
+    </div>
+    <div id="connStatus"></div>
+  </div>
+
+  <div class="tabs">
+    <button id="tab-query" class="${activeTab==='query'?'active':''}">Query</button>
+    <button id="tab-tables" class="${activeTab==='tables'?'active':''}">Browse tables</button>
+  </div>
+
+  <div id="panel"></div>`;
+}
+function L_target(c) {
+  if (c.engine === 'bigquery') return 'dataset: ' + (c.schema || '');
+  return 'db: ' + (c.database || '') + (c.schema ? ' / schema: ' + c.schema : '');
+}
+
+function wireWorkbench(c) {
+  document.getElementById('editBtn').onclick = () => { editing = { ...c }; render(); };
+  document.getElementById('testBtn').onclick = async () => { setStatus('connStatus','info','Testing…'); await testConnection(c, 'connStatus'); };
+  document.getElementById('tab-query').onclick = () => { activeTab = 'query'; renderPanel(c); setTabs(); };
+  document.getElementById('tab-tables').onclick = () => { activeTab = 'tables'; renderPanel(c); setTabs(); };
+  renderPanel(c);
+}
+function setTabs() {
+  document.getElementById('tab-query').classList.toggle('active', activeTab==='query');
+  document.getElementById('tab-tables').classList.toggle('active', activeTab==='tables');
+}
+
+function renderPanel(c) {
+  const p = document.getElementById('panel');
+  if (activeTab === 'query') {
+    p.innerHTML = `
+      <div class="card">
+        <label>Ask a question in plain English — answered against <b>${esc(c.name)}</b></label>
+        <textarea class="sql" id="askBox" placeholder="e.g. How many rows are in each table? Which state has the most records?"></textarea>
+        <div class="actions">
+          <button id="askBtn">Ask</button>
+          <button class="secondary" id="viewSchemaBtn" title="Show the schema currently held in cache">👁 View schema</button>
+          <button class="secondary" id="refreshSchemaBtn" title="Re-read tables & columns from the database">↻ Refresh schema</button>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px">
+            <input type="checkbox" id="rawChk" style="width:auto" /> Run as raw SQL (skip AI)
+          </label>
+        </div>
+        <div class="hint">Plain English → the Ana Small engine writes SQL, runs it on your ${c.engine} connection, and answers. Schema metadata is read once and cached; use <b>↻ Refresh schema</b> if the database structure changes. Tick the box to run your text as raw SQL instead.</div>
+        <div id="qStatus"></div>
+      </div>
+      <div id="trace"></div>`;
+    document.getElementById('viewSchemaBtn').onclick = () => viewCachedSchema(c);
+    document.getElementById('refreshSchemaBtn').onclick = () => {
+      clearSchemaCache(c.id);
+      clog(`🗑️ Cleared cached schema for "${c.name}" — it will be re-read on the next question`);
+      setStatus('qStatus', 'info', 'Schema cache cleared — it will be re-read from the database on your next question.');
+    };
+    document.getElementById('askBtn').onclick = async () => {
+      const text = document.getElementById('askBox').value.trim();
+      if (!text) return;
+      const raw = document.getElementById('rawChk').checked;
+      document.getElementById('trace').innerHTML = '';
+      if (raw) {
+        setStatus('qStatus','info','Running SQL…');
+        const res = await runSql(c, text);
+        if (res.error) setStatus('qStatus','err', res.error);
+        else { setStatus('qStatus','ok', `${(res.rows||[]).length} row(s).`); addStep('result', res); }
+      } else {
+        await askNaturalLanguage(c, text);
+      }
+    };
+  } else {
+    p.innerHTML = `
+      <div class="split">
+        <div>
+          <button class="secondary" id="loadTablesBtn" style="width:100%;margin-bottom:8px">↻ Load tables</button>
+          <div class="table-list" id="tableList"><div class="muted" style="padding:12px">Click “Load tables”.</div></div>
+        </div>
+        <div id="tableDetail"><div class="card"><p class="muted">Select a table to see its columns and a data preview.</p></div></div>
+      </div>`;
+    document.getElementById('loadTablesBtn').onclick = () => loadTables(c);
+    if (currentTable) loadTables(c); // refresh if returning
+  }
+}
+
+function suggestQuery(c) {
+  if (c.engine === 'clickhouse') return `SELECT name FROM system.tables WHERE database = '${nsOf(c)}' LIMIT 20`;
+  if (c.engine === 'bigquery')   return `SELECT table_name FROM \`${nsOf(c)}\`.INFORMATION_SCHEMA.TABLES LIMIT 20`;
+  return `SELECT table_name FROM information_schema.tables WHERE table_schema = '${nsOf(c)}' LIMIT 20`;
+}
+
+async function loadTables(c) {
+  const list = document.getElementById('tableList');
+  list.innerHTML = '<div class="muted" style="padding:12px">Loading…</div>';
+  const res = await runSql(c, tablesQuery(c));
+  if (res.error) { list.innerHTML = `<div class="status err">${esc(res.error)}</div>`; return; }
+  const tables = (res.rows || []).map(r => r.table_name ?? Object.values(r)[0]);
+  if (!tables.length) { list.innerHTML = '<div class="muted" style="padding:12px">No tables.</div>'; return; }
+  list.innerHTML = tables.map(t => `<div class="t ${t===currentTable?'active':''}" title="${esc(t)}">${esc(t)}</div>`).join('');
+  list.querySelectorAll('.t').forEach((n, i) => n.onclick = () => { currentTable = tables[i]; loadTables(c); showTable(c, tables[i]); });
+}
+
+async function showTable(c, table) {
+  const d = document.getElementById('tableDetail');
+  d.innerHTML = `<div class="card"><h3>${esc(table)}</h3><p class="muted">Loading columns…</p></div>`;
+  const cols = await runSql(c, columnsQuery(c, table));
+  const prev = await runSql(c, previewQuery(c, table));
+  let html = `<div class="card"><h3>${esc(table)}</h3>`;
+  if (cols.error) html += `<div class="status err">${esc(cols.error)}</div>`;
+  else html += `<h4 style="margin:6px 0">Columns (${(cols.rows||[]).length})</h4>` + gridHtml(cols);
+  html += `<h4 style="margin:14px 0 6px">Preview (first 50 rows)</h4>`;
+  html += prev.error ? `<div class="status err">${esc(prev.error)}</div>` : gridHtml(prev);
+  html += `</div>`;
+  d.innerHTML = html;
+}
+
+// ---------- results grid ----------
+function gridHtml(res) {
+  const cols = res.columns || [];
+  const rows = res.rows || [];
+  if (!cols.length) return '<div class="muted">No columns returned.</div>';
+  const head = '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>';
+  const body = rows.map(r => '<tr>' + cols.map(c => `<td>${esc(fmt(r[c]))}</td>`).join('') + '</tr>').join('');
+  return `<div class="results"><table class="grid"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+function fmt(v) { return v === null || v === undefined ? 'NULL' : String(v); }
+
+// ---------- helpers ----------
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[m])); }
+function setStatus(id, kind, msg) { const el = document.getElementById(id); if (el) el.innerHTML = `<div class="status ${kind}">${esc(msg)}</div>`; }
+
+// ---------- boot ----------
+document.getElementById('beUrl').textContent = location.origin;
+document.getElementById('newBtn').onclick = () => { editing = { engine: 'mysql', port: 3306 }; selectedId = null; uploading = false; render(); };
+document.getElementById('uploadBtn').onclick = () => { uploading = true; editing = null; render(); };
+
+// persist OpenAI key + model
+const oaKey = document.getElementById('oaKey'), oaModel = document.getElementById('oaModel');
+oaKey.value = localStorage.getItem('connectorOpenAiKey') || '';
+oaModel.value = localStorage.getItem('connectorOpenAiModel') || 'o3-mini';
+oaKey.oninput = () => localStorage.setItem('connectorOpenAiKey', oaKey.value);
+oaModel.oninput = () => localStorage.setItem('connectorOpenAiModel', oaModel.value);
+
+load();
+render();
+
+// Boot diagnostic: show whether the persisted schema cache survived this reload.
+const _cachedConns = Object.keys(schemaCache);
+clog(`🔁 Boot: loaded persisted schema cache for ${_cachedConns.length} connection(s)` +
+  (_cachedConns.length ? ' — ids: ' + _cachedConns.join(', ') : ' (none stored yet)'));
+</script>
+</body>
+</html>

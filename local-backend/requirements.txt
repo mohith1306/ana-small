@@ -1,0 +1,13 @@
+flask
+flask-cors
+gunicorn
+requests
+pymysql
+pandas
+sqlalchemy
+python-dotenv
+psycopg2-binary
+databricks-sql-connector
+snowflake-connector-python
+clickhouse-connect
+google-cloud-bigquery
