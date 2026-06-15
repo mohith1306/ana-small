@@ -2,9 +2,10 @@
 #   1. ana-small-backend : Flask API (SQL runner + OpenAI proxy + CSV upload)
 #   2. ana-small-frontend: static Vite/React build that calls the backend
 #
-# The MySQL database is NOT defined here — you are pointing the backend at your
-# own MySQL via the MYSQL_* env vars below (it must be reachable from Render,
-# i.e. a public host/IP or a tunnel, NOT your laptop's localhost).
+# No database is configured here. Users pick an engine (MySQL / Postgres /
+# Snowflake / BigQuery / Databricks / ClickHouse) and enter their own credentials
+# in the app's connector form; the backend runs each query against whatever
+# credentials arrive with the request. The backend needs no DB env vars.
 #
 # After the first deploy, set VITE_BACKEND_API_URL on the frontend to the
 # backend's public URL (https://ana-small-backend.onrender.com).
@@ -18,18 +19,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --timeout 300 --workers 2
     healthCheckPath: /health
-    envVars:
-      # No OPENAI_API_KEY here — each user enters their own key in the app UI.
-      - key: MYSQL_HOST          # publicly reachable MySQL host/IP
-        sync: false
-      - key: MYSQL_PORT
-        value: "3306"
-      - key: MYSQL_USER
-        sync: false
-      - key: MYSQL_PASSWORD
-        sync: false
-      - key: MYSQL_DATABASE
-        sync: false
+    # No env vars needed — neither DB creds nor OpenAI key live on the server.
 
   - type: web
     name: ana-small-frontend

@@ -1,35 +1,18 @@
 # Deploying Ana Small to Render
 
-Three pieces ship together:
+Two services ship together (no database to host):
 
 | Piece    | What it is                  | Where it runs on Render          |
 | -------- | --------------------------- | -------------------------------- |
 | Frontend | Vite/React static build     | Static Site (`ana-small-frontend`) |
 | Backend  | Flask API (SQL + OpenAI)    | Web Service (`ana-small-backend`)  |
-| Database | Your MySQL (`anasmall`)     | **Your own host** (not on Render) |
 
 Everything is wired by [`render.yaml`](render.yaml) at the repo root.
 
----
-
-## 0. Prerequisite: a reachable MySQL
-
-Render runs in the cloud, so it **cannot** reach `localhost:3306` on your laptop.
-The MySQL holding the 340B data must be reachable from the internet. Options:
-
-- **Managed MySQL** (recommended): AWS RDS, Aiven, PlanetScale, etc. Load the data
-  with the existing [`excel-to-mysql/import_excel.py`](excel-to-mysql/import_excel.py)
-  pointed at the managed host.
-- **Tunnel your local MySQL** (quick demo only): run a tunnel and use the public host
-  it gives you:
-  ```bash
-  cloudflared tunnel --url tcp://localhost:3306
-  ```
-  Keep your laptop + tunnel running the whole time the app is up.
-
-Have these 5 values ready: `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`,
-`MYSQL_PASSWORD`, `MYSQL_DATABASE`. (The OpenAI key is **not** a server setting —
-each user enters their own in the app.)
+**No database is deployed.** Each user picks an engine (MySQL / Postgres / Snowflake /
+BigQuery / Databricks / ClickHouse) and enters their own credentials in the app's
+connector form. The backend runs every query against whatever credentials arrive with
+the request, so there are **no DB env vars to set**.
 
 ---
 
@@ -55,24 +38,10 @@ The [`.gitignore`](.gitignore) already keeps `node_modules/`, `dist/`, the 60 MB
 1. Go to <https://dashboard.render.com> → **New** → **Blueprint**.
 2. Connect the GitHub repo. Render detects [`render.yaml`](render.yaml) and shows
    two services: `ana-small-backend` and `ana-small-frontend`.
-3. Click **Apply**. It will prompt for the env vars marked `sync: false`.
+3. Click **Apply**. The backend needs no env vars; the only one to set is the
+   frontend's `VITE_BACKEND_API_URL` (next step).
 
-## 3. Set the backend env vars
-
-On **ana-small-backend** → Environment:
-
-| Key              | Value                                  |
-| ---------------- | -------------------------------------- |
-| `MYSQL_HOST`     | the reachable host from step 0         |
-| `MYSQL_PORT`     | `3306` (default already set)           |
-| `MYSQL_USER`     | your DB user                           |
-| `MYSQL_PASSWORD` | your DB password                       |
-| `MYSQL_DATABASE` | `anasmall`                             |
-
-The OpenAI key is **not** set here — users type their own key in the app's API key
-field, which the frontend sends to the backend per request.
-
-## 4. Point the frontend at the backend
+## 3. Point the frontend at the backend
 
 After the backend's first deploy, copy its URL
 (e.g. `https://ana-small-backend.onrender.com`), then on
@@ -84,11 +53,12 @@ VITE_BACKEND_API_URL = https://ana-small-backend.onrender.com
 
 Trigger a redeploy of the frontend so the value is baked into the build.
 
-## 5. Verify
+## 4. Verify
 
 - Backend health: open `https://ana-small-backend.onrender.com/health` → `{"ok": true}`
 - Connectors workbench: `https://ana-small-backend.onrender.com/` → loads `connectors.html`
-- App: open the frontend URL, ask a question, confirm a SQL query runs against MySQL.
+- App: open the frontend URL, add a connector (engine + credentials), enter your OpenAI
+  key, ask a question, and confirm a SQL query runs against your database.
 
 ---
 
@@ -100,6 +70,7 @@ Trigger a redeploy of the frontend so the value is baked into the build.
 - **OpenAI key:** each user enters their own key in the app's API key field; it's sent
   to the backend per request and never stored server-side (see `/api/chat` in
   [`local-backend/server.py`](local-backend/server.py)).
-- **Slimmer backend builds:** [`local-backend/requirements.txt`](local-backend/requirements.txt)
-  installs every DB driver (Snowflake, BigQuery, Databricks, ClickHouse…). If you only
-  use MySQL, delete the unused ones to make builds much faster.
+- **DB drivers:** [`local-backend/requirements.txt`](local-backend/requirements.txt)
+  installs every engine's driver (MySQL, Postgres, Snowflake, BigQuery, Databricks,
+  ClickHouse) so users can pick any connector. Keep them all; trim only the engines you
+  never want to offer.
