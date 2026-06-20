@@ -1,0 +1,19 @@
+# Dependencies & build output
+node_modules/
+dist/
+__pycache__/
+*.pyc
+
+# Secrets / local env (set these in the Render dashboard instead)
+.env
+.env.local
+.env.*.local
+excel-to-mysql/.env
+local-backend/.env
+
+# Large data exports (don't ship to Git — load into MySQL directly)
+*.xlsx
+
+# OS / editor
+.DS_Store
+.vscode/
